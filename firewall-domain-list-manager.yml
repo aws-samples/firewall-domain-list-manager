@@ -1,0 +1,249 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: Deploy Firewall Domain List Manager Solution
+
+Parameters:
+
+  BucketName:
+    Type: String
+    Description: The name of the S3 Bucket to create
+  R53RuleType:
+    Type: String
+    Description: The action for the Route53 Resolver DNS Firewall. Must be BLOCK, ALLOW or ALERT
+    AllowedValues:
+     - ALLOW
+     - ALERT
+     - BLOCK
+  ANFWRuleType:
+      Type: String
+      Description: The action for the Network Firewall. Must be ALLOWLIST or DENYLIST
+      AllowedValues:
+       - ALLOWLIST
+       - DENYLIST
+  ANFWRuleGroupCapacity:
+      Type: Number
+      Description: The capacity for the stateful rule group that Network Firewall uses to manage the domain list.
+      MinValue: 2
+  DomainListName:
+      Type: String
+      Description: Name for Domain Lists
+      Default: managed-domain-list
+  RuleGroupName:
+      Type: String
+      Description: Name for Rule Groups
+      Default: domain-list-rule-group
+  DNSDomainListPriority:
+      Type: Number
+      Description: The priority of the domain list firewall rule group. If empty, no priority is set.
+      Default: 1
+  NetworkFirewallDefaultDomain:
+      Type: String
+      Description: The default domain included in the Network Firewall Rule Group. We can't leave it blank during creation, but it will be completely replaced once your first domain list is uploaded to S3.
+      Default: example.com
+  S3LambdaCodeBucket:
+      Type: String
+      Description: The S3 Bucket where the DomainUpdater Lambda function code is stored.
+      Default: firewall-domain-list-manager-solution
+  S3LambdaCodeKey:
+      Type: String
+      Description: The S3 Key of the zip file for the DomainUpdate Lambda function code.
+      Default: domain-list-manager.zip
+
+Metadata:
+
+  AWS::CloudFormation::Interface:
+    ParameterLabels:
+      BucketName:
+        default: S3 Bucket Name
+
+Conditions:
+  CreateBlockList: !Equals [!Ref R53RuleType, "BLOCK"]
+
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: 'AES256'
+      NotificationConfiguration:
+        LambdaConfigurations:
+          -
+            Event: s3:ObjectCreated:Put
+            Function: !GetAtt [DomainListUpdater,Arn]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+    DependsOn:
+     - LambdaPermission
+  S3BucketPolicy:   
+   Type: AWS::S3::BucketPolicy
+   Properties:
+     Bucket: !Ref BucketName
+     PolicyDocument:
+      Statement:
+       - Effect: "Deny"
+         Principal: "*"
+         Action: 
+          - "s3:*"
+         Resource: !Join 
+          - ''
+          - - !GetAtt [S3Bucket, Arn]
+            - "/*"
+         Condition:
+           Bool:
+            'aws:SecureTransport': False
+  DomainListUpdater:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code: 
+        S3Bucket: !Ref S3LambdaCodeBucket
+        S3Key: !Ref S3LambdaCodeKey
+      Handler: DomainListManagerLight.lambda_handler
+      MemorySize: 128
+      PackageType: Zip
+      Timeout: 120
+      Runtime: python3.8
+      Role: !GetAtt [LambdaExecutionRole, Arn]
+      Environment:
+        Variables:
+          ANFW_RULE_GROUP_CAPACITY: !Ref ANFWRuleGroupCapacity
+          ANFW_RULE_TYPE: !Ref ANFWRuleType
+          R53_RULE_TYPE: !Ref R53RuleType
+          RULE_GROUP_NAME: !Ref RuleGroupName
+          DOMAIN_LIST_NAME: !Ref DomainListName
+          DOMAIN_LIST_ID: !Ref R53ResolverDomainList
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt DomainListUpdater.Arn
+      Principal: "s3.amazonaws.com"
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Join
+          - ''
+          - - 'arn:aws:s3:::'
+            - !Ref BucketName
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal: 
+              Service: 
+              - "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+  ANFWDomainUpdaterPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "ANFW-Domain-Updater-Policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+         - Effect: "Allow"
+           Action: 
+            - "network-firewall:UpdateRuleGroup"
+            - "network-firewall:DescribeRuleGroup"
+           Resource: 
+            - !GetAtt ANFWDomainStatefulRuleGroup.RuleGroupArn
+      Roles:
+        - Ref: "LambdaExecutionRole"
+  R53DomainUpdaterPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "R53-Domain-Updater-Policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+         - Effect: "Allow"
+           Action: 
+            - "route53resolver:UpdateFirewallDomains"
+            - "route53resolver:ListFirewallDomains"
+           Resource:
+            - !GetAtt R53ResolverDomainList.Arn
+      Roles:
+        - Ref: "LambdaExecutionRole"
+  CloudWatchLogsLambdaAccess:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "CloudWatchLogsLambdaAccess"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+         - Effect: "Allow"
+           Action: 
+              - 'logs:CreateLogStream'
+              - 'logs:CreateLogGroup'
+              - 'logs:PutLogEvents'
+           Resource:
+              - !Sub >-
+                arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-DomainListUpdater-*
+              - !Sub >-
+                arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-DomainListUpdater-*:log-stream:*
+      Roles:
+        - Ref: "LambdaExecutionRole"
+  LambdaS3BucketPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "LambdaS3AccessPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+         - Effect: "Allow"
+           Action: "s3:GetObject"
+           Resource:
+            - !Join 
+              - ''
+              - - 'arn:aws:s3:::'
+                -  !Ref S3Bucket
+                - "/*"
+      Roles:
+        - Ref: "LambdaExecutionRole"
+  
+  # Targets start with . since we cannot leave this blank, Lambda will update it later.      
+
+  ANFWDomainStatefulRuleGroup:
+    Type: 'AWS::NetworkFirewall::RuleGroup'
+    Properties:
+      RuleGroupName: !Ref RuleGroupName
+      Type: STATEFUL
+      Capacity: !Ref ANFWRuleGroupCapacity
+      RuleGroup:
+        RuleVariables:
+          IPSets:
+            HOME_NET:
+              Definition:
+                - "0.0.0.0/0"
+        RulesSource:
+          RulesSourceList:
+            TargetTypes:
+              - HTTP_HOST
+              - TLS_SNI
+            Targets:
+              - !Ref NetworkFirewallDefaultDomain
+            GeneratedRulesType: !Ref ANFWRuleType
+  R53ResolverDomainList:
+    Type: AWS::Route53Resolver::FirewallDomainList
+    Properties: 
+      Name: !Ref DomainListName
+  R53FWRuleGroup:
+    Type: AWS::Route53Resolver::FirewallRuleGroup
+    Properties:
+       Name: !Ref RuleGroupName
+       FirewallRules:
+          -
+            Action: !Ref R53RuleType
+            FirewallDomainListId: !Ref R53ResolverDomainList
+            Priority: !Ref DNSDomainListPriority
+            BlockResponse: !If [CreateBlockList,"NODATA", !Ref "AWS::NoValue"]
+Outputs:
+  S3Bucket:
+    Value: !Ref S3Bucket
+    Description: S3 Bucket for object storage
