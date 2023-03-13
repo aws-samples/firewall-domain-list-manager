@@ -44,7 +44,7 @@ Parameters:
   S3LambdaCodeBucket:
       Type: String
       Description: The S3 Bucket where the DomainUpdater Lambda function code is stored.
-      Default: firewall-domain-list-manager-solution
+      Default: blog-firewall-domain-list-manager-solution
   S3LambdaCodeKey:
       Type: String
       Description: The S3 Key of the zip file for the DomainUpdate Lambda function code.
