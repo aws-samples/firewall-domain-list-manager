@@ -25,6 +25,13 @@ Parameters:
       Type: Number
       Description: The capacity for the stateful rule group that Network Firewall uses to manage the domain list.
       MinValue: 2
+  ANFWRuleOrdering:
+      Type: String
+      Description: The order evaluation for the Network Firewall Rules. Defaults to Strict.
+      AllowedValues:
+       - DEFAULT_ACTION_ORDER
+       - STRICT_ORDER
+      Default: STRICT_ORDER
   DomainListName:
       Type: String
       Description: Name for Domain Lists
@@ -37,9 +44,9 @@ Parameters:
       Type: Number
       Description: The priority of the domain list firewall rule group. If empty, no priority is set.
       Default: 1
-  NetworkFirewallDefaultDomain:
+  DefaultDomain:
       Type: String
-      Description: The default domain included in the Network Firewall Rule Group. We can't leave it blank during creation, but it will be completely replaced once your first domain list is uploaded to S3.
+      Description: The default domain included in Rule Groups for R53 and Network Firewall. We can't leave it blank during creation for Network Firewall, but it will be completely replaced once your first domain list is uploaded to S3.
       Default: example.com
   S3LambdaCodeBucket:
       Type: String
@@ -118,6 +125,7 @@ Resources:
           RULE_GROUP_NAME: !Ref RuleGroupName
           DOMAIN_LIST_NAME: !Ref DomainListName
           DOMAIN_LIST_ID: !Ref R53ResolverDomainList
+          RULE_ORDER: !Ref ANFWRuleOrdering
   LambdaPermission:
     Type: AWS::Lambda::Permission
     Properties: 
@@ -216,6 +224,8 @@ Resources:
       Type: STATEFUL
       Capacity: !Ref ANFWRuleGroupCapacity
       RuleGroup:
+        StatefulRuleOptions: 
+          RuleOrder: !Ref ANFWRuleOrdering
         RuleVariables:
           IPSets:
             HOME_NET:
@@ -227,12 +237,14 @@ Resources:
               - HTTP_HOST
               - TLS_SNI
             Targets:
-              - !Ref NetworkFirewallDefaultDomain
+              - !Ref DefaultDomain
             GeneratedRulesType: !Ref ANFWRuleType
   R53ResolverDomainList:
     Type: AWS::Route53Resolver::FirewallDomainList
     Properties: 
       Name: !Ref DomainListName
+      Domains: 
+       - !Ref DefaultDomain
   R53FWRuleGroup:
     Type: AWS::Route53Resolver::FirewallRuleGroup
     Properties:
@@ -246,4 +258,4 @@ Resources:
 Outputs:
   S3Bucket:
     Value: !Ref S3Bucket
-    Description: S3 Bucket for object storage
+    Description: S3 Bucket to store and process domain list

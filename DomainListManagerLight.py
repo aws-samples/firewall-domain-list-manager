@@ -15,6 +15,7 @@ r53_rule_type = os.environ['R53_RULE_TYPE']
 managed_domain_list_name = str(os.environ['DOMAIN_LIST_NAME'])
 r53_domain_list_id = str(os.environ['DOMAIN_LIST_ID'])
 domain_regex="(?:[*.a-z0-9](?:[a-z_0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]"
+rule_order = os.environ['RULE_ORDER']
 
 
 def get_list_file(event):
@@ -159,7 +160,10 @@ def update_anfw_rule_group(update_token,anfw_rule_group_name,domains,rule_type):
                     ],
                     'GeneratedRulesType': anfw_rule_type
                 }
-            }
+            },
+            "StatefulRuleOptions": {
+                "RuleOrder": rule_order
+                }
          }
          )
     except Exception as e: 
@@ -184,11 +188,7 @@ def lambda_handler(event,context):
         anfw_domains = get_anfw_domain_list(managed_rule_group_name)
         anfw_domains = [ s.lstrip("*") for s in anfw_domains ]
         
-        
-        # diff = set(anfw_domains).difference(set(currentdomains))
-        # diff=list(diff)
-        
-        # Don't do anything if we're removing all domains.
+        # Don't do anything if we're removing all domains or the current and new list is the same.
         if addremovelist != -1:
             # Don't do anything if the lists are out of sync.
             if set(anfw_domains) == set(currentdomains):
@@ -209,7 +209,7 @@ def lambda_handler(event,context):
             else:
                 print("There was a problem! The R53 and Network Firewall Domain Lists may be out of sync. Fix them manually or re-deploy")
         else:
-            print("The current domain list will remove all domains or is the same as the existing list, this is not currently supported. Please update the list and try again.")
+            print("The current domain list is either the same as what is deployed or will remove all domains, this is not currently supported. Please update the list and try again.")
 
         return None
         
